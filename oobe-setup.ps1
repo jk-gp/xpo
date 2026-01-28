@@ -29,7 +29,7 @@ Write-Log "=== Starting Windows 11 24H2 OOBE bootstrap ==="
 # 1) Local admin GPAdmin2 (no password)
 try {
   if (-not (Get-LocalUser -Name "GPAdmin2" -ErrorAction SilentlyContinue)) {
-    New-LocalUser -Name "GPAdmin2" -NoPassword -AccountNeverExpires:$true -PasswordNeverExpires:$true | Out-Null
+    New-LocalUser -Name "GPAdmin2" -NoPassword -AccountNeverExpires:$true | Out-Null
     Add-LocalGroupMember -Group "Administrators" -Member "GPAdmin2"
     Write-Log "Created local admin 'GPAdmin2' (no password) and added to Administrators." "SUCCESS"
   } else {
