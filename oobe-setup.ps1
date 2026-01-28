@@ -180,7 +180,7 @@ try {
   )
   $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru
   if ($proc.ExitCode -ne 0) { throw "msiexec exit code $($proc.ExitCode)" }
- Log "Intelligent Hub installed; enrollment attempted." "SUCCESS"
+ Write-Log "Intelligent Hub installed; enrollment attempted." "SUCCESS"
 } catch { Write-Log "Hub install/enrollment failed: $($_.Exception.Message)" "ERROR"; throw }
 finally {
   if ($WsPwdPtr) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($WsPwdPtr) }
