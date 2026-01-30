@@ -59,7 +59,7 @@ trap {
   try { Stop-Transcript | Out-Null } catch {}
   exit 1
 }
-``
+
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Write-Log "=== Starting Windows 11 24H2 OOBE bootstrap ==="
 
