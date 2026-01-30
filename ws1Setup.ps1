@@ -51,9 +51,7 @@ Write-Host $line -ForegroundColor Cyan
 function Prompt-ForUsername {
     while ($true) {
         $u = Read-Host "Enter Workspace ONE username (YOUR_OHR@genpact.com)"
-        if ($u -match '^[^@]+@genpact\.com$') { return $u }
-        Write-Host "Invalid format. Please use YOUR_OHR@genpact.com" -ForegroundColor Red
-    }
+           }
 }
 $WsUser = Prompt-ForUsername
 $WsPass = Read-Host "Enter Workspace ONE password (VISIBLE as you type)"
