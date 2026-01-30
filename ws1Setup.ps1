@@ -17,7 +17,7 @@ $GroupId        = "DataTechAILandingO"         # Your OG Group ID
 $ServerFqdn = ($ServerUrlInput -replace '^https?://','').TrimEnd('/')
 
 # Public Hub MSI (swap to your DS /agents path if you prefer)
-$HubMsiUrl = "https://packages.vmware.com/omnissa/AirwatchAgent.msi"
+$HubMsiUrl = "https://packages.omnissa.com/wsone/AirwatchAgent.msi"
 
 # Ensure we are running elevated
 $currUser = [Security.Principal.WindowsIdentity]::GetCurrent()
