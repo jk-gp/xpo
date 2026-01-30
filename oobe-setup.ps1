@@ -115,7 +115,7 @@ try {
 # --- OPTIONAL: Stop the post-update Windows Welcome Experience for first user(s) ---
 try {
   # Apply to .DEFAULT hive so it affects first logon too
-  $def = "HKU:\.DEFAULT\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"
+  $def = "HKCU:\.DEFAULT\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"
   if (-not (Test-Path $def)) { New-Item -Path $def -Force | Out-Null }
   New-ItemProperty -Path $def -Name "SubscribedContent-310093Enabled" -PropertyType DWord -Value 0 -Force | Out-Null
   Write-Log "Disabled Windows Welcome Experience (ContentDeliveryManager) for initial logon." "SUCCESS"
