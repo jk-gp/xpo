@@ -11,6 +11,7 @@ New-Item -Path $LogRoot -ItemType Directory -Force -ErrorAction SilentlyContinue
 
 $ActionLog     = Join-Path $LogRoot ("OOBE-Setup_Action_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
 $TranscriptLog = Join-Path $LogRoot ("OOBE-Setup_Transcript_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
+$InstallLog = Join-Path $LogRoot ("OOBE-Setup_InstallLog_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
 
 # Start transcript in its own, different file
 Start-Transcript -Path $TranscriptLog -Append | Out-Null
@@ -229,12 +230,13 @@ try {
   $msiArgs = @(
     "/i", "`"$hubMsi`"",
     "/qn",
+    "/l*v $InstallLog",
     "ENROLL=Y",
     "SERVER=$WsServer",
     "LGName=$WsGroupId",
     "USERNAME=$WsUser",
-    "PASSWORD=$WsPwdPlain",
-    "ASSIGNTOLOGGEDINUSER=Y"
+    "PASSWORD=$WsPwdPlain"
+  #  "ASSIGNTOLOGGEDINUSER=Y"
   )
   $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru
   if ($proc.ExitCode -ne 0) { throw "msiexec exit code $($proc.ExitCode)" }
