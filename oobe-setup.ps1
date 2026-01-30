@@ -7,8 +7,8 @@ $ErrorActionPreference = 'Stop'
 $LogRoot = "C:\ITSetup"
 New-Item -Path $LogRoot -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
 $LogFile = Join-Path $LogRoot ("OOBE-Setup_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
-$LogFileTranscript = Join-Path $LogRoot ("OOBE-Setup_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
-Start-Transcript -Path $LogFileTranscript -Append | Out-Null
+#$LogFileTranscript = Join-Path $LogRoot ("OOBE-Setup_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
+#Start-Transcript -Path $LogFileTranscript -Append | Out-Null
 
 function Write-Log {
   param([string]$Message,[ValidateSet("INFO","WARN","ERROR","SUCCESS")]$Level="INFO")
