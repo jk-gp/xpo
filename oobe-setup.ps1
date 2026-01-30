@@ -3,27 +3,63 @@
 # pins to 24H2, sets power to Never, downloads Hub with progress, installs+enrolls,
 # opens Entra ID Join on first logon, logs/validates, then reboots.
 
+# --- Logging setup (separate files + lock-tolerant writer) ---
 $ErrorActionPreference = 'Stop'
+
 $LogRoot = "C:\ITSetup"
 New-Item -Path $LogRoot -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
-$LogFile = Join-Path $LogRoot ("OOBE-Setup_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
-#$LogFileTranscript = Join-Path $LogRoot ("OOBE-Setup_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
-#Start-Transcript -Path $LogFileTranscript -Append | Out-Null
 
+$ActionLog     = Join-Path $LogRoot ("OOBE-Setup_Action_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
+$TranscriptLog = Join-Path $LogRoot ("OOBE-Setup_Transcript_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
+
+# Start transcript in its own, different file
+Start-Transcript -Path $TranscriptLog -Append | Out-Null
+
+# Write-Log with FileShare.ReadWrite + retry
 function Write-Log {
-  param([string]$Message,[ValidateSet("INFO","WARN","ERROR","SUCCESS")]$Level="INFO")
-  $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+  param(
+    [Parameter(Mandatory)][string]$Message,
+    [ValidateSet("INFO","WARN","ERROR","SUCCESS")][string]$Level = "INFO"
+  )
+
+  $ts   = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
   $line = "$ts [$Level] $Message"
-  Add-Content -Path $LogFile -Value $line
-  $color = switch ($Level) { "SUCCESS" {"Green"} "WARN" {"Yellow"} "ERROR" {"Red"} Default {"Gray"} }
+
+  # Retry up to ~1.3s (50,100,200,400,800 ms) if another process holds an exclusive handle
+  $attempt = 0
+  while ($true) {
+    try {
+      # Open for ReadWrite with ReadWrite sharing, then seek to end and append a line
+      $fs = [System.IO.File]::Open($ActionLog,
+                                   [System.IO.FileMode]::OpenOrCreate,
+                                   [System.IO.FileAccess]::ReadWrite,
+                                   [System.IO.FileShare]::ReadWrite)
+      $fs.Seek(0, [System.IO.SeekOrigin]::End) | Out-Null
+      $sw = New-Object System.IO.StreamWriter($fs, [System.Text.Encoding]::UTF8)
+      $sw.WriteLine($line)
+      $sw.Flush(); $sw.Dispose(); $fs.Dispose()
+      break
+    }
+    catch {
+      if ($attempt -ge 4) { throw }  # after ~1.3s, bubble up
+      Start-Sleep -Milliseconds (50 * [math]::Pow(2,$attempt))
+      $attempt++
+    }
+  }
+
+  # Console echo
+  $color = switch ($Level) {
+    "SUCCESS" { "Green" } "WARN" { "Yellow" } "ERROR" { "Red" } Default { "Gray" }
+  }
   Write-Host $line -ForegroundColor $color
 }
+
 trap {
   Write-Log "UNHANDLED: $($_.Exception.Message)" "ERROR"
   try { Stop-Transcript | Out-Null } catch {}
   exit 1
 }
-
+``
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Write-Log "=== Starting Windows 11 24H2 OOBE bootstrap ==="
 
