@@ -188,7 +188,8 @@ try { gpupdate /target:computer /force | Out-Null } catch {}
 # --------- Ensure Hub UI opens once after reboot ----------
 $RunOnceKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"
 $LaunchCmd = 'powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 10; ' +
-             'try { Start-Process ''ws1winhub:'' } catch {}; '"
+             'try { Start-Process ''ws1winhub:'' } catch {}; ' +
+             'try { Start-Process ''vmwinhub:'' } catch {}"'
 New-ItemProperty -Path $RunOnceKey -Name "LaunchWorkspaceONEHub" -PropertyType String -Value $LaunchCmd -Force | Out-Null
 
 Write-Host "Setup complete. The device will restart in 10 seconds..." -ForegroundColor Cyan
