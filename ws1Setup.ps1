@@ -53,7 +53,7 @@ function Prompt-ForUsername {
         $u = Read-Host "Enter Workspace ONE username (YOUR_OHR@genpact.com)"
            }
 }
-$WsUser = Prompt-ForUsername
+$WsUser = Read-Host "Enter Workspace ONE username (Type in ONLY your OHR - just numbers, without genpact.com)"
 $WsPass = Read-Host "Enter Workspace ONE password (VISIBLE as you type)"
 
 Write-Host ""
