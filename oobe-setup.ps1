@@ -7,7 +7,8 @@ $ErrorActionPreference = 'Stop'
 $LogRoot = "C:\ITSetup"
 New-Item -Path $LogRoot -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
 $LogFile = Join-Path $LogRoot ("OOBE-Setup_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
-# Start-Transcript -Path $LogFile -Append | Out-Null
+$LogFileTranscript = Join-Path $LogRoot ("OOBE-Setup_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
+Start-Transcript -Path $LogFileTranscript -Append | Out-Null
 
 function Write-Log {
   param([string]$Message,[ValidateSet("INFO","WARN","ERROR","SUCCESS")]$Level="INFO")
@@ -43,25 +44,46 @@ try {
   else { Write-Log ("Verify local admin present+admin: {0}" -f $adminOk) "ERROR" }
 } catch { Write-Log "Create local admin failed: $($_.Exception.Message)" "ERROR"; throw }
 
-# 2) Disable OOBE
+# --- EXTRA: Harden OOBE suppression & privacy screens (24H2) ---
 try {
   $oobeKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE"
   if (-not (Test-Path $oobeKey)) { New-Item -Path $oobeKey -Force | Out-Null }
-  New-ItemProperty -Path $oobeKey -Name "SkipMachineOOBE" -PropertyType DWord -Value 1 -Force | Out-Null
-  New-ItemProperty -Path $oobeKey -Name "SkipUserOOBE"    -PropertyType DWord -Value 1 -Force | Out-Null
-  New-ItemProperty -Path $oobeKey -Name "PrivacyConsentStatus" -PropertyType DWord -Value 1 -Force | Out-Null
 
-  $sysSetup = "HKLM:\SYSTEM\Setup"
-  New-ItemProperty -Path $sysSetup -Name "OOBEInProgress"        -PropertyType DWord -Value 0 -Force | Out-Null
-  New-ItemProperty -Path $sysSetup -Name "SetupType"             -PropertyType DWord -Value 0 -Force | Out-Null
-  New-ItemProperty -Path $sysSetup -Name "SystemSetupInProgress" -PropertyType DWord -Value 0 -Force | Out-Null
+  # Hide EULA & privacy pages and pick 'ProtectYourPC' = 3 (minimal data collection)
+  New-ItemProperty -Path $oobeKey -Name "HideEULAPage"            -PropertyType DWord -Value 1 -Force | Out-Null
+  New-ItemProperty -Path $oobeKey -Name "DisablePrivacyExperience"-PropertyType DWord -Value 1 -Force | Out-Null
+  New-ItemProperty -Path $oobeKey -Name "DisableVoice"            -PropertyType DWord -Value 1 -Force | Out-Null
+  New-ItemProperty -Path $oobeKey -Name "PrivacyConsentStatus"    -PropertyType DWord -Value 1 -Force | Out-Null
+  New-ItemProperty -Path $oobeKey -Name "ProtectYourPC"           -PropertyType DWord -Value 3 -Force | Out-Null
 
-  $o = Get-ItemProperty -Path $oobeKey
-  $s = Get-ItemProperty -Path $sysSetup
-  $oobeOk = ($o.SkipMachineOOBE -eq 1 -and $o.SkipUserOOBE -eq 1 -and $s.OOBEInProgress -eq 0)
-  if ($oobeOk) { Write-Log ("OOBE disabled; verify: {0}" -f $oobeOk) "SUCCESS" }
-  else { Write-Log ("OOBE disabled; verify: {0}" -f $oobeOk) "ERROR" }
-} catch { Write-Log "Failed to set OOBE flags: $($_.Exception.Message)" "ERROR"; throw }
+  # Useful post‑sign‑in cosmetic: speed up first logon animation
+  New-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System" `
+                   -Name "EnableFirstLogonAnimation" -PropertyType DWord -Value 1 -Force | Out-Null
+
+  Write-Log "Applied OOBE privacy/EULA suppression keys." "SUCCESS"
+} catch { Write-Log "Failed to apply OOBE suppression keys: $($_.Exception.Message)" "ERROR" }
+
+# --- EXTRA: Prefer local-account path at OOBE (try ms-cxh:localonly, fallback to BYPASSNRO) ---
+try {
+  # 1st attempt: ms-cxh local-only path (works on most 24H2 builds)
+  Write-Log "Attempting to force local account path (ms-cxh:localonly)…"
+  Start-Process -FilePath "cmd.exe" -ArgumentList "/c start ms-cxh:localonly" -WindowStyle Hidden
+  Start-Sleep -Seconds 2
+  Write-Host "`nIf you still see Microsoft Account sign-in, disconnect network, then press Shift+F10 and run the script again." -ForegroundColor Yellow
+
+  # Fallback: enable "I don't have internet" path via the old BYPASSNRO flag
+  New-ItemProperty -Path $oobeKey -Name "BypassNRO" -PropertyType DWord -Value 1 -Force | Out-Null
+  Write-Log "Set BypassNRO=1 as fallback. If ms-cxh is blocked on this build, unplug/disable network and continue with limited setup." "WARN"
+} catch { Write-Log "Failed to set local-only OOBE path: $($_.Exception.Message)" "ERROR" }
+
+# --- OPTIONAL: Stop the post-update Windows Welcome Experience for first user(s) ---
+try {
+  # Apply to .DEFAULT hive so it affects first logon too
+  $def = "HKU:\.DEFAULT\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"
+  if (-not (Test-Path $def)) { New-Item -Path $def -Force | Out-Null }
+  New-ItemProperty -Path $def -Name "SubscribedContent-310093Enabled" -PropertyType DWord -Value 0 -Force | Out-Null
+  Write-Log "Disabled Windows Welcome Experience (ContentDeliveryManager) for initial logon." "SUCCESS"
+} catch { Write-Log "Failed to disable Welcome Experience: $($_.Exception.Message)" "WARN" }
 
 # 3) Pin to Windows 11 24H2 (TRV)
 try {
