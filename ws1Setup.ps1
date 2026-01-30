@@ -61,8 +61,9 @@ $msiArgs = @(
     "/qn", "/norestart",
     "/L*v", "`"$LogPath`"",
     "ENROLL=Y",
+    "DOWNLOADWSBUNDLE=true",
     "SERVER=`"$ServerFqdn`"",
-    "LGName=`"$GroupId`"",
+    "LGNAME=`"$GroupId`"",
     "USERNAME=`"$WsUser`"",
     "PASSWORD=`"$WsPass`"",
     "ASSIGNTOLOGGEDINUSER=Y"
