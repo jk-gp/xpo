@@ -139,7 +139,8 @@ function Set-ComputerNameIfNeeded {
 }
 
 # --------- OOBE entry point ----------
-$InOOBE = Test-IsOOBE
+# $InOOBE = Test-IsOOBE //bypass test
+$InOOBE = $true
 if ($InOOBE) {
     Write-Host "OOBE detected: Applying privacy, Windows Hello, and consumer-experience suppressions..." -ForegroundColor Yellow
     Set-OOBEPrivacySkip      # privacy + consumer features + ad ID + location
@@ -322,4 +323,4 @@ New-ItemProperty -Path $RunOnceKey -Name "LaunchWorkspaceONEHub" -PropertyType S
 
 Write-Host "Setup complete. The device will restart in 10 seconds..." -ForegroundColor Cyan
 Start-Sleep -Seconds 10
-# Restart-Computer -Force
+Restart-Computer -Force
