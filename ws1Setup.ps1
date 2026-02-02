@@ -36,6 +36,135 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     exit
 }
 
+# =========================
+# OOBE Helper Functions
+# =========================
+
+function Test-IsOOBE {
+    try {
+        $s = Get-ItemProperty -Path 'HKLM:\SYSTEM\Setup' -ErrorAction Stop
+        return (($s.OOBEInProgress -eq 1) -or ($s.SystemSetupInProgress -eq 1))
+    } catch { return $false }
+}
+
+function Set-OOBEPrivacySkip {
+    <#
+      Hides privacy/consent pages and sets quiet defaults.
+      Keys reflect widely-used guidance to skip OOBE privacy questions (24H2+ compatible).
+    #>
+    $paths = @{
+        "HKLM:\SOFTWARE\Policies\Microsoft\Windows\OOBE" = @{ "DisablePrivacyExperience" = 1 }  # Don't launch privacy settings
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE" = @{ 
+            "DisableVoice" = 1; "HideEULAPage" = 1; "PrivacyConsentStatus" = 1; "ProtectYourPC" = 3
+        }
+        # Turn off consumer features/suggestions (no extra apps/recommendations)
+        "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" = @{ "DisableWindowsConsumerFeatures" = 1; "DisableTailoredExperiencesWithDiagnosticData" = 1 }
+        # Turn off advertising ID
+        "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AdvertisingInfo" = @{ "DisabledByGroupPolicy" = 1 }
+        # Turn off device/location at machine policy (machine-level policy hides the OOBE toggle)
+        "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors" = @{ "DisableLocation" = 1; "DisableLocationScripting" = 1 }
+    }
+    foreach ($k in $paths.Keys) {
+        New-Item -Path $k -Force | Out-Null
+        foreach ($n in $paths[$k].Keys) {
+            New-ItemProperty -Path $k -Name $n -Value $paths[$k][$n] -PropertyType DWord -Force | Out-Null
+        }
+    }
+}
+
+function Disable-WindowsHelloPrompts {
+    <#
+      Suppresses Windows Hello for Business enrollment during/after OOBE.
+      You can re-enable WHfB later with Intune/UEM when ready.
+    #>
+    $pfw = "HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork"
+    New-Item -Path $pfw -Force | Out-Null
+    # Completely disable WHfB and also disable the "post-logon provisioning" nag if enabled elsewhere
+    New-ItemProperty -Path $pfw -Name "Enabled" -Value 0 -PropertyType DWord -Force | Out-Null
+    New-ItemProperty -Path $pfw -Name "DisablePostLogonProvisioning" -Value 1 -PropertyType DWord -Force | Out-Null
+}
+
+function Ensure-OOBENetworkReady {
+    # Start BITS (resumable download engine) just in case it's not started yet
+    try { Start-Service BITS -ErrorAction SilentlyContinue } catch {}
+    Write-Host "Ensure the device is connected to the network (Ethernet recommended). Press ENTER to continue..." -ForegroundColor Yellow
+    [void][System.Console]::ReadLine()
+    # Quick internet reachability check (HEAD)
+    for ($i=1; $i -le 30; $i++) {
+        try {
+            $r = Invoke-WebRequest -Uri "https://packages.omnissa.com" -Method Head -TimeoutSec 5
+            if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 400) { return $true }
+        } catch {}
+        Start-Sleep -Seconds 2
+    }
+    return $false
+}
+
+function Get-GeneratedComputerName {
+    param(
+        [Parameter(Mandatory=$false)][string]$UserInputOhrOrUpn,
+        [Parameter(Mandatory=$false)][string]$Prefix = "GNPT"  # keep short to stay < 15 chars
+    )
+    # Try to extract OHR digits if user typed OHR or UPN (e.g., 1234567 or 1234567@genpact.com)
+    $ohr = ($UserInputOhrOrUpn -replace '@.*$','') -replace '[^\d]',''
+    # Fallback to last 7 of BIOS serial if no OHR found
+    $serial = (Get-CimInstance -ClassName Win32_BIOS -ErrorAction SilentlyContinue).SerialNumber
+    $suffix = if ($ohr) { $ohr.Substring([Math]::Max(0,$ohr.Length-7)) } elseif ($serial) { ($serial -replace '[^\w]','').Substring([Math]::Max(0,([Math]::Min(7,($serial -replace '[^\w]','').Length)))) } else { (Get-Random -Maximum 9999999).ToString() }
+    $name = "$Prefix-$suffix"
+    # NetBIOS-safe, <= 15 chars
+    $safe = ($name -replace '[^A-Za-z0-9\-]','')
+    if ($safe.Length -gt 15) { $safe = $safe.Substring(0,15) }
+    return $safe.ToUpper()
+}
+
+function Set-ComputerNameIfNeeded {
+    param(
+        [Parameter(Mandatory=$true)][string]$DesiredName,
+        [Parameter(Mandatory=$true)][string]$ResumeScriptFullPath
+    )
+    if ($env:COMPUTERNAME -ieq $DesiredName) { return $false } # no rename needed
+    try {
+        Rename-Computer -NewName $DesiredName -Force -ErrorAction Stop
+        # Persist resume of the main script after reboot
+        $runOnce = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"
+        $cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ResumeScriptFullPath`" -ResumeAfterRename"
+        New-ItemProperty -Path $runOnce -Name "WS1Resume" -Value $cmd -PropertyType String -Force | Out-Null
+        Write-Host "Computer will reboot now to apply name: $DesiredName" -ForegroundColor Cyan
+        Start-Sleep -Seconds 3
+        Restart-Computer -Force
+    } catch {
+        Write-Warning "Rename failed: $($_.Exception.Message)"
+    }
+    return $true
+}
+
+# --------- OOBE entry point ----------
+$InOOBE = Test-IsOOBE
+if ($InOOBE) {
+    Write-Host "OOBE detected: Applying privacy, Windows Hello, and consumer-experience suppressions..." -ForegroundColor Yellow
+    Set-OOBEPrivacySkip      # privacy + consumer features + ad ID + location
+    Disable-WindowsHelloPrompts
+    if (-not (Ensure-OOBENetworkReady)) {
+        Write-Host "No internet connectivity detected. Please connect and rerun." -ForegroundColor Red
+        exit 2
+    }
+    # Auto-generate a compliant computer name BEFORE enrollment
+    # (Use your soon-to-be-entered OHR/UPN if present in the current session variables; safe fallback otherwise)
+    $CandidateUser = $WsUser  # will be $null on first pass; safe fallback occurs in function
+    $Desired = Get-GeneratedComputerName -UserInputOhrOrUpn $CandidateUser
+    # Copy this script to a stable path for RunOnce resume (so we can safely reboot after rename)
+    $persist = Join-Path $env:ProgramData "WS1HubSetup\Install-WS1Hub-Enroll-24H2.ps1"
+    try {
+        New-Item -Path (Split-Path $persist) -ItemType Directory -Force | Out-Null
+        if ($PSCommandPath) { Copy-Item -Path $PSCommandPath -Destination $persist -Force }
+    } catch {}
+    Set-ComputerNameIfNeeded -DesiredName $Desired -ResumeScriptFullPath $persist | Out-Null
+}
+# =========================
+# End OOBE Helper
+# =========================
+
+
 # ---------- User Info Banner ----------
 $line = ('=' * 78)
 Write-Host $line -ForegroundColor Cyan
@@ -164,7 +293,7 @@ $msiArgs = @(
     "LGNAME=`"$GroupId`"",
     "USERNAME=`"$WsUser`"",
     "PASSWORD=`"$WsPass`"",
-    "ASSIGNTOLOGGEDINUSER=Y"
+    "ASSIGNTOLOGGEDINUSER=N"
 )
 
 Write-Host "Installing Hub & enrolling device (silent)..." -ForegroundColor Green
