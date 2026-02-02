@@ -160,6 +160,7 @@ if ($InOOBE) {
     } catch {}
     Set-ComputerNameIfNeeded -DesiredName $Desired -ResumeScriptFullPath $persist | Out-Null
 }
+Write-Host "OOBE Helper END"
 # =========================
 # End OOBE Helper
 # =========================
