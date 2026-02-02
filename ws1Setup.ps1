@@ -92,7 +92,7 @@ function Ensure-OOBENetworkReady {
     # Quick internet reachability check (HEAD)
     for ($i=1; $i -le 30; $i++) {
         try {
-            $r = Invoke-WebRequest -Uri "https://packages.omnissa.com" -Method Head -TimeoutSec 5
+            $r = Invoke-WebRequest -Uri "https://google.com" -Method Head -TimeoutSec 5 -UseBasicParsing
             if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 400) { return $true }
         } catch {}
         Start-Sleep -Seconds 2
