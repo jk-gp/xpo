@@ -103,7 +103,7 @@ function Ensure-OOBENetworkReady {
 
     # Open the “Show available networks” flyout directly (works from console/PowerShell)
     try { Start-Process "ms-availablenetworks:" -ErrorAction SilentlyContinue } catch {}
-    # The URI above is known to launch the Wi‑Fi networks panel. [1](https://stackoverflow.com/questions/41148711/invoking-the-wifi-connections-ui-in-windows-10)[2](https://superuser.com/questions/1311073/run-command-to-open-network-connections-list-box)
+    # The URI above is known to launch the Wi‑Fi networks panel. 
 
     Write-Host " • After connecting, return here and press ENTER. We'll verify internet connectivity..." -ForegroundColor White
     while ($true) {
@@ -139,7 +139,7 @@ function Set-ComputerNameIfNeeded {
         Rename-Computer -NewName $DesiredName -Force -ErrorAction Stop
         Write-Host ""
         Write-Host " Computer rename staged as: $DesiredName" -ForegroundColor Cyan
-        Write-Host " No restart performed now (per policy). New name applies on the next reboot." -ForegroundColor Yellow
+        Write-Host " " -ForegroundColor Yellow
     } catch { Write-Warning "Rename failed: $($_.Exception.Message)" }
     return $true
 }
@@ -147,7 +147,7 @@ function Set-ComputerNameIfNeeded {
 $InOOBE = Test-IsOOBE
 if ($InOOBE) {
     Write-Host ""
-    Write-Host " OOBE detected: applying privacy & Hello suppressions and disabling consumer features ..." -ForegroundColor Yellow
+    Write-Host " OOBE detected..." -ForegroundColor Yellow
     Set-OOBEPrivacySkip
     Disable-WindowsHelloPrompts   # Suppresses WHfB prompts reliably. [3](https://www.elevenforum.com/t/enable-or-disable-choose-privacy-settings-experience-at-sign-in-in-windows-11.12027/)[4](https://www.thewindowsclub.com/turn-off-advertising-id-windows-10)
     Ensure-OOBENetworkReady
@@ -327,4 +327,6 @@ $LaunchCmd = 'powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -S
 New-ItemProperty -Path $RunOnceKey -Name "LaunchWorkspaceONEHub" -PropertyType String -Value $LaunchCmd -Force | Out-Null
 
 Write-Host ""
-Write-Host " Setup complete. If the hostname was changed, it will take effect after the next reboot (no restart performed now)." -ForegroundColor Cyan
+Write-Host " Setup complete. " -ForegroundColor Cyan
+Start-Sleep -Seconds 10
+Restart-Computer -Force
