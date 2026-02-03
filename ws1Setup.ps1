@@ -1,25 +1,20 @@
 <#
 .SYNOPSIS
-  Installs Workspace ONE Intelligent Hub for Windows, silently enrolls the device to your DS/OG,
-  pins Windows to 24H2 (feature updates), and launches Hub UI (no forced reboot after rename).
+  Installs Workspace ONE Intelligent Hub for Windows, silently enrolls to your DS/OG,
+  pins Windows to 24H2, opens Hub UI, and hardens OOBE for zero‑prompt privacy/Hello.
 
 .USER MESSAGE (VISIBLE, IMPORTANT)
-  • Username must be entered as: YOUR_OHR@genpact.com
-  • Password is NOT masked (visible). Double-check before pressing Enter.
-  • You’ll see your OHR+password and can choose to re-enter or proceed.
-  • Download can take up to ~10 minutes depending on your connection.
-
-.NOTES
-  - SERVER and LGName are preconfigured for your environment.
-  - Enrollment credentials are passed to msiexec properties (plain text), as required by Hub silent enrollment.
+  • Login = OHR only (digits). Do NOT add any domain.
+  • Password is VISIBLE. You’ll see OHR+password and can adjust them before proceeding.
+  • Download may take up to ~10 minutes depending on your connection.
 #>
 
 #--------------------------- Fixed values (per your environment) ---------------------------#
-$ServerUrlInput = "https://ds1106.awmdm.com"   # Provided with protocol; Hub SERVER expects FQDN
-$GroupId        = "DataTechAILandingO"         # Your OG Group ID
+$ServerUrlInput = "https://ds1106.awmdm.com"
+$GroupId        = "DataTechAILandingO"
 #------------------------------------------------------------------------------------------#
 
-# Normalize SERVER argument: Hub docs call for DS FQDN; strip protocol if present
+# Normalize SERVER argument: Hub expects the DS FQDN (strip protocol if present)
 $ServerFqdn = ($ServerUrlInput -replace '^https?://','').TrimEnd('/')
 
 # Preferred Hub MSI source (swap to your DS /agents path if desired)
@@ -39,7 +34,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 
 # =======================================================================
 # OOBE Helper: privacy suppression, WHfB off (with RunOnce re-apply),
-# consumer features off, reliable OOBE detection, Wi‑Fi loop (google.com).
+# consumer features off, reliable OOBE detection, Wi‑Fi auto-open + check.
 # =======================================================================
 
 function Test-IsOOBE {
@@ -59,7 +54,7 @@ function Test-IsOOBE {
         $state = (Get-ItemProperty -Path $stateKey -ErrorAction Stop).StateName
         if ($state -match 'RESEAL_TO_OOBE' -or $state -match 'UNDEPLOYABLE') { $oobeFlag = $true }
     } catch {}
-    return [bool]$true
+    return [bool]$oobeFlag
 }
 
 function Set-RegistryDword {
@@ -103,25 +98,32 @@ function Ensure-OOBENetworkReady {
     try { Start-Service BITS -ErrorAction SilentlyContinue } catch {}
 
     Write-Host ""
-    Write-Host " NETWORK CHECK (OOBE) " -ForegroundColor Yellow
-    Write-Host " • Please switch to the OOBE screen and connect to Wi‑Fi (or plug Ethernet)." -ForegroundColor White
-    Write-Host " • Return here and press ENTER. We will verify internet connectivity..." -ForegroundColor White
+    Write-Host " NETWORK SETUP (OOBE) " -ForegroundColor Yellow
+    Write-Host " • We will open the Wi‑Fi selection for you. Connect to your network there." -ForegroundColor White
+
+    # Open the “Show available networks” flyout directly (works from console/PowerShell)
+    try { Start-Process "ms-availablenetworks:" -ErrorAction SilentlyContinue } catch {}
+    # The URI above is known to launch the Wi‑Fi networks panel. [1](https://stackoverflow.com/questions/41148711/invoking-the-wifi-connections-ui-in-windows-10)[2](https://superuser.com/questions/1311073/run-command-to-open-network-connections-list-box)
+
+    Write-Host " • After connecting, return here and press ENTER. We'll verify internet connectivity..." -ForegroundColor White
     while ($true) {
         [void][System.Console]::ReadLine()
         try {
             $ok = (Test-NetConnection -ComputerName "google.com" -Port 443 -WarningAction SilentlyContinue).TcpTestSucceeded
         } catch { $ok = $false }
         if ($ok) { Write-Host " Internet connectivity verified (google.com:443)." -ForegroundColor Green; break }
-        Write-Host " Not online yet. Connect in OOBE, then press ENTER to check again..." -ForegroundColor Yellow
+        Write-Host " Not online yet. We will reopen the Wi‑Fi picker..." -ForegroundColor Yellow
+        try { Start-Process "ms-availablenetworks:" -ErrorAction SilentlyContinue } catch {}
+        Write-Host " Connect, then press ENTER to verify again." -ForegroundColor White
     }
 }
 
 function Get-GeneratedComputerName {
     param(
-        [Parameter(Mandatory=$false)][string]$UserInputOhrOrUpn,
+        [Parameter(Mandatory=$false)][string]$OhrForSuffix,
         [Parameter(Mandatory=$false)][string]$Prefix = "GNPT"  # keep short to remain <= 15 chars with suffix
     )
-    $ohr = ($UserInputOhrOrUpn -replace '@.*$','') -replace '[^\d]',''
+    $ohr = ($OhrForSuffix -replace '[^\d]','')
     $serial = (Get-CimInstance -ClassName Win32_BIOS -ErrorAction SilentlyContinue).SerialNumber
     $suffix = if ($ohr) { $ohr.Substring([Math]::Max(0,$ohr.Length-7)) } elseif ($serial) { ($serial -replace '[^\w]','').Substring([Math]::Max(0,([Math]::Min(7,($serial -replace '[^\w]','').Length)))) } else { (Get-Random -Maximum 9999999).ToString() }
     $name = "$Prefix-$suffix"
@@ -147,8 +149,9 @@ if ($InOOBE) {
     Write-Host ""
     Write-Host " OOBE detected: applying privacy & Hello suppressions and disabling consumer features ..." -ForegroundColor Yellow
     Set-OOBEPrivacySkip
-    Disable-WindowsHelloPrompts  # [1](https://www.elevenforum.com/t/enable-or-disable-choose-privacy-settings-experience-at-sign-in-in-windows-11.12027/)[2](https://www.thewindowsclub.com/turn-off-advertising-id-windows-10)
+    Disable-WindowsHelloPrompts   # Suppresses WHfB prompts reliably. [3](https://www.elevenforum.com/t/enable-or-disable-choose-privacy-settings-experience-at-sign-in-in-windows-11.12027/)[4](https://www.thewindowsclub.com/turn-off-advertising-id-windows-10)
     Ensure-OOBENetworkReady
+    # Name can include OHR suffix if already typed later; for first pass, use serial/random
     $Desired = Get-GeneratedComputerName
     Set-ComputerNameIfNeeded -DesiredName $Desired | Out-Null
 }
@@ -160,34 +163,51 @@ Write-Host $line -ForegroundColor Cyan
 Write-Host " WORKSPACE ONE – WINDOWS ENROLLMENT" -ForegroundColor Cyan
 Write-Host $line -ForegroundColor Cyan
 Write-Host " READ BEFORE CONTINUING:" -ForegroundColor Yellow
-Write-Host "   • Username format: YOUR_OHR@genpact.com" -ForegroundColor White
-Write-Host "   • Password is NOT masked (visible). CAREFULLY verify before pressing Enter." -ForegroundColor White
-Write-Host "   • You'll be shown your OHR+password and can re-enter if needed." -ForegroundColor White
-Write-Host "   • Download may take up to ~10 minutes depending on your network speed." -ForegroundColor White
+Write-Host "   • Login = OHR only (digits). Do NOT add any domain." -ForegroundColor White
+Write-Host "   • Password is VISIBLE. You can review and adjust before proceeding." -ForegroundColor White
+Write-Host "   • Download may take up to ~10 minutes depending on network speed." -ForegroundColor White
 Write-Host $line -ForegroundColor Cyan
 
-# -------- Username & Password (single entry + confirm/preview flow) --------
+# -------- OHR & Password (single entry + preview; Enter = proceed) --------
 Write-Host ""
-$WsUserRaw = Read-Host "  Enter Workspace ONE username (Type ONLY your OHR digits or full YOUR_OHR@genpact.com)"
-if ($WsUserRaw -notmatch '@') { $WsUser = "$WsUserRaw@genpact.com" } else { $WsUser = $WsUserRaw }
+$ohr = Read-Host "  Enter your OHR (digits only)"
+while ($ohr -notmatch '^\d+$') {
+    Write-Host "  OHR must be digits only. Please try again." -ForegroundColor Red
+    $ohr = Read-Host "  Enter your OHR (digits only)"
+}
+
+Write-Host ""
+$WsPass = Read-Host "  Enter Workspace ONE password (VISIBLE as you type)"
 
 while ($true) {
     Write-Host ""
-    $WsPass = Read-Host "  Enter Workspace ONE password (VISIBLE as you type)"
-    Write-Host ""
-    Write-Host "  You entered:" -ForegroundColor Yellow
-    Write-Host "   • Username : $WsUser" -ForegroundColor White
+    Write-Host "  Review your entries:" -ForegroundColor Yellow
+    Write-Host "   • OHR      : $ohr" -ForegroundColor White
     Write-Host "   • Password : $WsPass" -ForegroundColor White
-    $choice = Read-Host "  Proceed with these values?  [P]roceed  /  [R]e-enter  /  [N] Abort"
-    if ($choice -match '^[Pp]$') { break }
-    if ($choice -match '^[Nn]$') { Write-Host " Aborted by user." -ForegroundColor Yellow; exit }
-    # else loop to re-enter
+    Write-Host ""
+    $choice = Read-Host "  Press [Enter] to proceed, or type O (change OHR) / P (change password) / N (abort)"
+    if ($choice -eq "" -or $choice -match '^[\r\n]+$') { break }
+    elseif ($choice -match '^[Nn]$') { Write-Host " Aborted by user." -ForegroundColor Yellow; exit }
+    elseif ($choice -match '^[Oo]$') {
+        $ohr = Read-Host "  Re-enter OHR (digits only)"
+        while ($ohr -notmatch '^\d+$') {
+            Write-Host "  OHR must be digits only. Please try again." -ForegroundColor Red
+            $ohr = Read-Host "  Re-enter OHR (digits only)"
+        }
+    }
+    elseif ($choice -match '^[Pp]$') {
+        $WsPass = Read-Host "  Re-enter password (VISIBLE as you type)"
+    }
+    else {
+        # Any other input = proceed as well
+        break
+    }
 }
 
 Write-Host ""
 Write-Host " Server : $ServerFqdn" -ForegroundColor DarkGray
 Write-Host " Group  : $GroupId" -ForegroundColor DarkGray
-Write-Host " User   : $WsUser" -ForegroundColor DarkGray
+Write-Host " OHR    : $ohr" -ForegroundColor DarkGray
 Write-Host ""
 
 $confirm = Read-Host "  Proceed with installation and enrollment now? (Y/N)"
@@ -275,9 +295,9 @@ $msiArgs = @(
     "DOWNLOADWSBUNDLE=true",
     "SERVER=`"$ServerFqdn`"",
     "LGName=`"$GroupId`"",
-    "USERNAME=`"$WsUser`"",
+    "USERNAME=`"$ohr`"",           # OHR only, no domain
     "PASSWORD=`"$WsPass`"",
-    "ASSIGNTOLOGGEDINUSER=N"   # << changed per request
+    "ASSIGNTOLOGGEDINUSER=N"       # per your request
 )
 
 Write-Host ""
@@ -296,6 +316,7 @@ New-Item -Path $WUKey -Force | Out-Null
 New-ItemProperty -Path $WUKey -Name "ProductVersion" -PropertyType String -Value "Windows 11" -Force | Out-Null
 New-ItemProperty -Path $WUKey -Name "TargetReleaseVersion" -PropertyType DWord -Value 1 -Force | Out-Null
 New-ItemProperty -Path $WUKey -Name "TargetReleaseVersionInfo" -PropertyType String -Value "24H2" -Force | Out-Null
+
 try { gpupdate /target:computer /force | Out-Null } catch {}
 
 # --------- Ensure Hub UI opens (no reboot assumed) ----------
