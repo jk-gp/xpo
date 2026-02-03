@@ -104,7 +104,7 @@ function Ensure-OOBENetworkReady {
         [void][System.Console]::ReadLine()
         # Verify real internet reachability (TCP 443) to the Hub package origin
         try {
-            $ok = (Test-NetConnection -ComputerName "packages.omnissa.com" -Port 443 -WarningAction SilentlyContinue).TcpTestSucceeded
+            $ok = (Test-NetConnection -ComputerName "google.com" -Port 443 -WarningAction SilentlyContinue).TcpTestSucceeded
         } catch { $ok = $false }
         if ($ok) { Write-Host "Internet connectivity verified." -ForegroundColor Green; break }
         Write-Host "Still offline. Connect in the OOBE network panel, then press ENTER to re-check..." -ForegroundColor Yellow
