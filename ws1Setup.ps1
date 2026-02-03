@@ -54,7 +54,7 @@ function Test-IsOOBE {
         $state = (Get-ItemProperty -Path $stateKey -ErrorAction Stop).StateName
         if ($state -match 'RESEAL_TO_OOBE' -or $state -match 'UNDEPLOYABLE') { $oobeFlag = $true }
     } catch {}
-    return [bool]$oobeFlag
+    return [bool]$true
 }
 
 function Set-RegistryDword {
