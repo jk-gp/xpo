@@ -1,11 +1,13 @@
+
 <#
 .SYNOPSIS
   Installs Workspace ONE Intelligent Hub for Windows, silently enrolls the device to your DS/OG,
-  pins Windows to 24H2 (feature updates), restarts, and launches Hub UI after reboot.
+  pins Windows to 24H2 (feature updates), and launches Hub UI (no reboot forced after rename).
 
 .USER MESSAGE (VISIBLE, IMPORTANT)
   • Username must be entered as: YOUR_OHR@genpact.com
   • Password is NOT masked (visible). Double-check before pressing Enter.
+  • You will be asked to CONFIRM the password to avoid typos.
   • Download can take up to ~10 minutes depending on your connection.
 
 .NOTES
@@ -36,74 +38,83 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     exit
 }
 
-# =========================
-# OOBE Helper Functions
-# =========================
+# =======================================================================
+# OOBE Helper: privacy suppression, WHfB off, consumer features off,
+# reliable OOBE detection, and Wi-Fi verification loop (no auto-reboot).
+# =======================================================================
 
 function Test-IsOOBE {
+    <#
+      Reliable OOBE detection using multiple signals:
+        - HKLM:\SYSTEM\Setup\OOBEInProgress / SystemSetupInProgress (best-effort)
+        - HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State\StateName
+          (values like *_RESEAL_TO_OOBE or UNDEPLOYABLE while setup is active)
+    #>
+    $oobeFlag = $false
     try {
         $s = Get-ItemProperty -Path 'HKLM:\SYSTEM\Setup' -ErrorAction Stop
-        return (($s.OOBEInProgress -eq 1) -or ($s.SystemSetupInProgress -eq 1))
-    } catch { return $false }
+        if (($s.OOBEInProgress -eq 1) -or ($s.SystemSetupInProgress -eq 1)) { $oobeFlag = $true }
+    } catch {}
+    try {
+        $stateKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State'
+        $state = (Get-ItemProperty -Path $stateKey -ErrorAction Stop).StateName
+        if ($state -match 'RESEAL_TO_OOBE' -or $state -match 'UNDEPLOYABLE') { $oobeFlag = $true }
+    } catch {}
+    return [bool]$oobeFlag
+}
+
+function Set-RegistryDword {
+    param([string]$Path,[string]$Name,[int]$Value)
+    try {
+        New-Item -Path $Path -Force -ErrorAction SilentlyContinue | Out-Null
+        New-ItemProperty -Path $Path -Name $Name -Value $Value -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
+    } catch {
+        Write-Warning "Failed to set $Path\$Name : $($_.Exception.Message)"
+    }
 }
 
 function Set-OOBEPrivacySkip {
-    <#
-      Hides privacy/consent pages and sets quiet defaults.
-      Keys reflect widely-used guidance to skip OOBE privacy questions (24H2+ compatible).
-    #>
-    $paths = @{
-        "HKLM:\SOFTWARE\Policies\Microsoft\Windows\OOBE" = @{ "DisablePrivacyExperience" = 1 }  # Don't launch privacy settings
-        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE" = @{ 
-            "DisableVoice" = 1; "HideEULAPage" = 1; "PrivacyConsentStatus" = 1; "ProtectYourPC" = 3
-        }
-        # Turn off consumer features/suggestions (no extra apps/recommendations)
-        "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent" = @{ "DisableWindowsConsumerFeatures" = 1; "DisableTailoredExperiencesWithDiagnosticData" = 1 }
-        # Turn off advertising ID
-        "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AdvertisingInfo" = @{ "DisabledByGroupPolicy" = 1 }
-        # Turn off device/location at machine policy (machine-level policy hides the OOBE toggle)
-        "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors" = @{ "DisableLocation" = 1; "DisableLocationScripting" = 1 }
-    }
-    foreach ($k in $paths.Keys) {
-        New-Item -Path $k -Force | Out-Null
-        foreach ($n in $paths[$k].Keys) {
-            New-ItemProperty -Path $k -Name $n -Value $paths[$k][$n] -PropertyType DWord -Force | Out-Null
-        }
-    }
+    # Hide privacy/consent pages, EULA, tailored experiences; turn off ad ID & location; consumer features off
+    Set-RegistryDword "HKLM:\SOFTWARE\Policies\Microsoft\Windows\OOBE"                "DisablePrivacyExperience" 1
+    Set-RegistryDword "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE"          "HideEULAPage" 1
+    Set-RegistryDword "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE"          "PrivacyConsentStatus" 1
+    Set-RegistryDword "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE"          "DisableVoice" 1
+    Set-RegistryDword "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE"          "ProtectYourPC" 3
+    Set-RegistryDword "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent"        "DisableWindowsConsumerFeatures" 1
+    Set-RegistryDword "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent"        "DisableTailoredExperiencesWithDiagnosticData" 1
+    Set-RegistryDword "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AdvertisingInfo"     "DisabledByGroupPolicy" 1
+    Set-RegistryDword "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors"  "DisableLocation" 1
+    Set-RegistryDword "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors"  "DisableLocationScripting" 1
 }
 
 function Disable-WindowsHelloPrompts {
-    <#
-      Suppresses Windows Hello for Business enrollment during/after OOBE.
-      You can re-enable WHfB later with Intune/UEM when ready.
-    #>
-    $pfw = "HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork"
-    New-Item -Path $pfw -Force | Out-Null
-    # Completely disable WHfB and also disable the "post-logon provisioning" nag if enabled elsewhere
-    New-ItemProperty -Path $pfw -Name "Enabled" -Value 0 -PropertyType DWord -Force | Out-Null
-    New-ItemProperty -Path $pfw -Name "DisablePostLogonProvisioning" -Value 1 -PropertyType DWord -Force | Out-Null
+    # Suppress WHfB during/after OOBE; can be re-enabled via UEM/Intune later
+    Set-RegistryDword "HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork" "Enabled" 0
+    Set-RegistryDword "HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork" "DisablePostLogonProvisioning" 1
 }
 
 function Ensure-OOBENetworkReady {
-    # Start BITS (resumable download engine) just in case it's not started yet
+    # BITS can resume & is network-friendly; start it if not running (best effort)
     try { Start-Service BITS -ErrorAction SilentlyContinue } catch {}
-    Write-Host "Ensure the device is connected to the network (Ethernet recommended). Press ENTER to continue..." -ForegroundColor Yellow
-    [void][System.Console]::ReadLine()
-    # Quick internet reachability check (HEAD)
-    for ($i=1; $i -le 30; $i++) {
+    Write-Host ""
+    Write-Host "NETWORK CHECK (OOBE):" -ForegroundColor Yellow
+    Write-Host "• Please switch back to the OOBE window and connect to Wi‑Fi (or plug Ethernet)." -ForegroundColor White
+    Write-Host "• Return here and press ENTER. We'll verify internet connectivity." -ForegroundColor White
+    while ($true) {
+        [void][System.Console]::ReadLine()
+        # Verify real internet reachability (TCP 443) to the Hub package origin
         try {
-            $r = Invoke-WebRequest -Uri "https://google.com" -Method Head -TimeoutSec 5 -UseBasicParsing
-            if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 400) { return $true }
-        } catch {}
-        Start-Sleep -Seconds 2
+            $ok = (Test-NetConnection -ComputerName "packages.omnissa.com" -Port 443 -WarningAction SilentlyContinue).TcpTestSucceeded
+        } catch { $ok = $false }
+        if ($ok) { Write-Host "Internet connectivity verified." -ForegroundColor Green; break }
+        Write-Host "Still offline. Connect in the OOBE network panel, then press ENTER to re-check..." -ForegroundColor Yellow
     }
-    return $false
 }
 
 function Get-GeneratedComputerName {
     param(
         [Parameter(Mandatory=$false)][string]$UserInputOhrOrUpn,
-        [Parameter(Mandatory=$false)][string]$Prefix = "GNPT"  # keep short to stay < 15 chars
+        [Parameter(Mandatory=$false)][string]$Prefix = "GNPT"  # keep short to remain <= 15 chars with suffix
     )
     # Try to extract OHR digits if user typed OHR or UPN (e.g., 1234567 or 1234567@genpact.com)
     $ohr = ($UserInputOhrOrUpn -replace '@.*$','') -replace '[^\d]',''
@@ -119,53 +130,30 @@ function Get-GeneratedComputerName {
 
 function Set-ComputerNameIfNeeded {
     param(
-        [Parameter(Mandatory=$true)][string]$DesiredName,
-        [Parameter(Mandatory=$true)][string]$ResumeScriptFullPath
+        [Parameter(Mandatory=$true)][string]$DesiredName
     )
-    if ($env:COMPUTERNAME -ieq $DesiredName) { return $false } # no rename needed
+    if ($env:COMPUTERNAME -ieq $DesiredName) { return $false } # already set
     try {
         Rename-Computer -NewName $DesiredName -Force -ErrorAction Stop
-        # Persist resume of the main script after reboot
-        $runOnce = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"
-        $cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$ResumeScriptFullPath`" -ResumeAfterRename"
-        New-ItemProperty -Path $runOnce -Name "WS1Resume" -Value $cmd -PropertyType String -Force | Out-Null
-        Write-Host "Computer will reboot now to apply name: $DesiredName" -ForegroundColor Cyan
-        Start-Sleep -Seconds 3
-        Restart-Computer -Force
+        Write-Host "Computer rename staged as: $DesiredName" -ForegroundColor Cyan
+        Write-Host "No restart will be performed now (per policy). The new name will take effect after the next reboot." -ForegroundColor Yellow
     } catch {
         Write-Warning "Rename failed: $($_.Exception.Message)"
     }
     return $true
 }
 
-# --------- OOBE entry point ----------
-# $InOOBE = Test-IsOOBE //bypass test
-$InOOBE = $true
+$InOOBE = Test-IsOOBE
 if ($InOOBE) {
-    Write-Host "OOBE detected: Applying privacy, Windows Hello, and consumer-experience suppressions..." -ForegroundColor Yellow
-    Set-OOBEPrivacySkip      # privacy + consumer features + ad ID + location
+    Write-Host "OOBE detected: Applying privacy suppressions, disabling Windows Hello, and turning off consumer features." -ForegroundColor Yellow
+    Set-OOBEPrivacySkip
     Disable-WindowsHelloPrompts
-    if (-not (Ensure-OOBENetworkReady)) {
-        Write-Host "No internet connectivity detected. Please connect and rerun." -ForegroundColor Red
-        exit 2
-    }
-    # Auto-generate a compliant computer name BEFORE enrollment
-    # (Use your soon-to-be-entered OHR/UPN if present in the current session variables; safe fallback otherwise)
-    $CandidateUser = $WsUser  # will be $null on first pass; safe fallback occurs in function
-    $Desired = Get-GeneratedComputerName -UserInputOhrOrUpn $CandidateUser
-    # Copy this script to a stable path for RunOnce resume (so we can safely reboot after rename)
-    $persist = Join-Path $env:ProgramData "WS1HubSetup\Install-WS1Hub-Enroll-24H2.ps1"
-    try {
-        New-Item -Path (Split-Path $persist) -ItemType Directory -Force | Out-Null
-        if ($PSCommandPath) { Copy-Item -Path $PSCommandPath -Destination $persist -Force }
-    } catch {}
-    Set-ComputerNameIfNeeded -DesiredName $Desired -ResumeScriptFullPath $persist | Out-Null
-}
-Write-Host "OOBE Helper END"
-# =========================
-# End OOBE Helper
-# =========================
+    Ensure-OOBENetworkReady
 
+    # Generate a compliant computer name BEFORE enrollment (no forced reboot)
+    $Desired = Get-GeneratedComputerName
+    Set-ComputerNameIfNeeded -DesiredName $Desired | Out-Null
+}
 
 # ---------- User Info Banner ----------
 $line = ('=' * 78)
@@ -175,17 +163,21 @@ Write-Host $line -ForegroundColor Cyan
 Write-Host "READ BEFORE CONTINUING:" -ForegroundColor Yellow
 Write-Host "  • Username format: YOUR_OHR@genpact.com" -ForegroundColor White
 Write-Host "  • Password is NOT masked (visible). CAREFULLY verify before pressing Enter." -ForegroundColor White
+Write-Host "  • You will be asked to CONFIRM the password." -ForegroundColor White
 Write-Host "  • Download may take up to ~10 minutes depending on your network speed." -ForegroundColor White
 Write-Host $line -ForegroundColor Cyan
 
-# Prompt for username (enforce @genpact.com) & an UNMASKED password
-function Prompt-ForUsername {
-    while ($true) {
-        $u = Read-Host "Enter Workspace ONE username (YOUR_OHR@genpact.com)"
-           }
+# Prompt for username (accept OHR-only or full UPN) & an UNMASKED password with confirmation
+$WsUserRaw = Read-Host "Enter Workspace ONE username (Type ONLY your OHR digits or full YOUR_OHR@genpact.com)"
+if ($WsUserRaw -notmatch '@') { $WsUser = "$WsUserRaw@genpact.com" } else { $WsUser = $WsUserRaw }
+
+# Password verify loop (visible by design)
+while ($true) {
+    $WsPass1 = Read-Host "Enter Workspace ONE password (VISIBLE as you type)"
+    $WsPass2 = Read-Host "Re-enter the password to CONFIRM (VISIBLE as you type)"
+    if ($WsPass1 -ceq $WsPass2) { $WsPass = $WsPass1; break }
+    Write-Host "Passwords do not match. Let's try again. Be careful—password is visible." -ForegroundColor Red
 }
-$WsUser = Read-Host "Enter Workspace ONE username (Type in ONLY your OHR - just numbers, without genpact.com)"
-$WsPass = Read-Host "Enter Workspace ONE password (VISIBLE as you type)"
 
 Write-Host ""
 Write-Host "Server: $ServerFqdn" -ForegroundColor DarkGray
@@ -292,7 +284,7 @@ $msiArgs = @(
     "ENROLL=Y",
     "DOWNLOADWSBUNDLE=true",
     "SERVER=`"$ServerFqdn`"",
-    "LGNAME=`"$GroupId`"",
+    "LGName=`"$GroupId`"",
     "USERNAME=`"$WsUser`"",
     "PASSWORD=`"$WsPass`"",
     "ASSIGNTOLOGGEDINUSER=N"
@@ -314,13 +306,11 @@ New-ItemProperty -Path $WUKey -Name "TargetReleaseVersion" -PropertyType DWord -
 New-ItemProperty -Path $WUKey -Name "TargetReleaseVersionInfo" -PropertyType String -Value "24H2" -Force | Out-Null
 try { gpupdate /target:computer /force | Out-Null } catch {}
 
-# --------- Ensure Hub UI opens once after reboot ----------
+# --------- Ensure Hub UI opens (no reboot assumed) ----------
 $RunOnceKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"
 $LaunchCmd = 'powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 10; ' +
              'try { Start-Process ''ws1winhub:'' } catch {}; ' +
              'try { Start-Process ''vmwinhub:'' } catch {}"'
 New-ItemProperty -Path $RunOnceKey -Name "LaunchWorkspaceONEHub" -PropertyType String -Value $LaunchCmd -Force | Out-Null
 
-Write-Host "Setup complete. The device will restart in 10 seconds..." -ForegroundColor Cyan
-Start-Sleep -Seconds 10
-Restart-Computer -Force
+Write-Host "Setup complete. If you changed the hostname, it will take effect after the next reboot (no reboot performed now)." -ForegroundColor Cyan
