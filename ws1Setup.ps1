@@ -98,7 +98,8 @@ function Ensure-OOBENetworkReady {
     try { Start-Service BITS -ErrorAction SilentlyContinue } catch {}
     Write-Host ""
     Write-Host "NETWORK CHECK (OOBE):" -ForegroundColor Yellow
-    Write-Host "• Please switch back to the OOBE window and connect to Wi‑Fi (or plug Ethernet)." -ForegroundColor White
+    Write-Host "• Please plug in netwwork cable or connect with your Wi-Fi network. When connected, switch back to this window and click ENTER" -ForegroundColor White
+    start ms-availablenetworks:
     Write-Host "• Return here and press ENTER. We'll verify internet connectivity." -ForegroundColor White
     while ($true) {
         [void][System.Console]::ReadLine()
@@ -107,7 +108,8 @@ function Ensure-OOBENetworkReady {
             $ok = (Test-NetConnection -ComputerName "google.com" -Port 443 -WarningAction SilentlyContinue).TcpTestSucceeded
         } catch { $ok = $false }
         if ($ok) { Write-Host "Internet connectivity verified." -ForegroundColor Green; break }
-        Write-Host "Still offline. Connect in the OOBE network panel, then press ENTER to re-check..." -ForegroundColor Yellow
+        Write-Host "Still offline. Connect Wi-Fi, then press ENTER to re-check..." -ForegroundColor Yellow
+        start ms-availablenetworks:
     }
 }
 
