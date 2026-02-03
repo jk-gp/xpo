@@ -1,13 +1,12 @@
-
 <#
 .SYNOPSIS
   Installs Workspace ONE Intelligent Hub for Windows, silently enrolls the device to your DS/OG,
-  pins Windows to 24H2 (feature updates), and launches Hub UI (no reboot forced after rename).
+  pins Windows to 24H2 (feature updates), and launches Hub UI (no forced reboot after rename).
 
 .USER MESSAGE (VISIBLE, IMPORTANT)
   • Username must be entered as: YOUR_OHR@genpact.com
   • Password is NOT masked (visible). Double-check before pressing Enter.
-  • You will be asked to CONFIRM the password to avoid typos.
+  • You’ll see your OHR+password and can choose to re-enter or proceed.
   • Download can take up to ~10 minutes depending on your connection.
 
 .NOTES
@@ -39,16 +38,16 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 
 # =======================================================================
-# OOBE Helper: privacy suppression, WHfB off, consumer features off,
-# reliable OOBE detection, and Wi-Fi verification loop (no auto-reboot).
+# OOBE Helper: privacy suppression, WHfB off (with RunOnce re-apply),
+# consumer features off, reliable OOBE detection, Wi‑Fi loop (google.com).
 # =======================================================================
 
 function Test-IsOOBE {
     <#
       Reliable OOBE detection using multiple signals:
-        - HKLM:\SYSTEM\Setup\OOBEInProgress / SystemSetupInProgress (best-effort)
+        - HKLM:\SYSTEM\Setup\OOBEInProgress / SystemSetupInProgress
         - HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State\StateName
-          (values like *_RESEAL_TO_OOBE or UNDEPLOYABLE while setup is active)
+          (values like *_RESEAL_TO_OOBE / UNDEPLOYABLE during setup)
     #>
     $oobeFlag = $false
     try {
@@ -74,7 +73,7 @@ function Set-RegistryDword {
 }
 
 function Set-OOBEPrivacySkip {
-    # Hide privacy/consent pages, EULA, tailored experiences; turn off ad ID & location; consumer features off
+    # Hide privacy/consent pages, EULA, tailored experiences; ad ID & location off; consumer features off
     Set-RegistryDword "HKLM:\SOFTWARE\Policies\Microsoft\Windows\OOBE"                "DisablePrivacyExperience" 1
     Set-RegistryDword "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE"          "HideEULAPage" 1
     Set-RegistryDword "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE"          "PrivacyConsentStatus" 1
@@ -88,28 +87,32 @@ function Set-OOBEPrivacySkip {
 }
 
 function Disable-WindowsHelloPrompts {
-    # Suppress WHfB during/after OOBE; can be re-enabled via UEM/Intune later
+    # Suppress WHfB during/after OOBE (documented PassportForWork knobs)
     Set-RegistryDword "HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork" "Enabled" 0
     Set-RegistryDword "HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork" "DisablePostLogonProvisioning" 1
+    # Re-apply once after first logon to prevent any race with post-logon provisioning
+    $RunOnceKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"
+    $reapply = 'powershell -NoProfile -WindowStyle Hidden -Command "New-Item -Path ''HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork'' -Force | Out-Null; ' +
+               'New-ItemProperty -Path ''HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork'' -Name Enabled -Value 0 -PropertyType DWord -Force | Out-Null; ' +
+               'New-ItemProperty -Path ''HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork'' -Name DisablePostLogonProvisioning -Value 1 -PropertyType DWord -Force | Out-Null"'
+    New-Item -Path $RunOnceKey -Force | Out-Null
+    New-ItemProperty -Path $RunOnceKey -Name "WS1_Reapply_WHfB_Disable" -PropertyType String -Value $reapply -Force | Out-Null
 }
 
 function Ensure-OOBENetworkReady {
-    # BITS can resume & is network-friendly; start it if not running (best effort)
     try { Start-Service BITS -ErrorAction SilentlyContinue } catch {}
+
     Write-Host ""
-    Write-Host "NETWORK CHECK (OOBE):" -ForegroundColor Yellow
-    Write-Host "• Please plug in netwwork cable or connect with your Wi-Fi network. When connected, switch back to this window and click ENTER" -ForegroundColor White
-    start ms-availablenetworks:
-    Write-Host "• Return here and press ENTER. We'll verify internet connectivity." -ForegroundColor White
+    Write-Host " NETWORK CHECK (OOBE) " -ForegroundColor Yellow
+    Write-Host " • Please switch to the OOBE screen and connect to Wi‑Fi (or plug Ethernet)." -ForegroundColor White
+    Write-Host " • Return here and press ENTER. We will verify internet connectivity..." -ForegroundColor White
     while ($true) {
         [void][System.Console]::ReadLine()
-        # Verify real internet reachability (TCP 443) to the Hub package origin
         try {
             $ok = (Test-NetConnection -ComputerName "google.com" -Port 443 -WarningAction SilentlyContinue).TcpTestSucceeded
         } catch { $ok = $false }
-        if ($ok) { Write-Host "Internet connectivity verified." -ForegroundColor Green; break }
-        Write-Host "Still offline. Connect Wi-Fi, then press ENTER to re-check..." -ForegroundColor Yellow
-        start ms-availablenetworks:
+        if ($ok) { Write-Host " Internet connectivity verified (google.com:443)." -ForegroundColor Green; break }
+        Write-Host " Not online yet. Connect in OOBE, then press ENTER to check again..." -ForegroundColor Yellow
     }
 }
 
@@ -118,78 +121,77 @@ function Get-GeneratedComputerName {
         [Parameter(Mandatory=$false)][string]$UserInputOhrOrUpn,
         [Parameter(Mandatory=$false)][string]$Prefix = "GNPT"  # keep short to remain <= 15 chars with suffix
     )
-    # Try to extract OHR digits if user typed OHR or UPN (e.g., 1234567 or 1234567@genpact.com)
     $ohr = ($UserInputOhrOrUpn -replace '@.*$','') -replace '[^\d]',''
-    # Fallback to last 7 of BIOS serial if no OHR found
     $serial = (Get-CimInstance -ClassName Win32_BIOS -ErrorAction SilentlyContinue).SerialNumber
     $suffix = if ($ohr) { $ohr.Substring([Math]::Max(0,$ohr.Length-7)) } elseif ($serial) { ($serial -replace '[^\w]','').Substring([Math]::Max(0,([Math]::Min(7,($serial -replace '[^\w]','').Length)))) } else { (Get-Random -Maximum 9999999).ToString() }
     $name = "$Prefix-$suffix"
-    # NetBIOS-safe, <= 15 chars
     $safe = ($name -replace '[^A-Za-z0-9\-]','')
     if ($safe.Length -gt 15) { $safe = $safe.Substring(0,15) }
     return $safe.ToUpper()
 }
 
 function Set-ComputerNameIfNeeded {
-    param(
-        [Parameter(Mandatory=$true)][string]$DesiredName
-    )
-    if ($env:COMPUTERNAME -ieq $DesiredName) { return $false } # already set
+    param([Parameter(Mandatory=$true)][string]$DesiredName)
+    if ($env:COMPUTERNAME -ieq $DesiredName) { return $false }
     try {
         Rename-Computer -NewName $DesiredName -Force -ErrorAction Stop
-        Write-Host "Computer rename staged as: $DesiredName" -ForegroundColor Cyan
-        Write-Host "No restart will be performed now (per policy). The new name will take effect after the next reboot." -ForegroundColor Yellow
-    } catch {
-        Write-Warning "Rename failed: $($_.Exception.Message)"
-    }
+        Write-Host ""
+        Write-Host " Computer rename staged as: $DesiredName" -ForegroundColor Cyan
+        Write-Host " No restart performed now (per policy). New name applies on the next reboot." -ForegroundColor Yellow
+    } catch { Write-Warning "Rename failed: $($_.Exception.Message)" }
     return $true
 }
 
 $InOOBE = Test-IsOOBE
 if ($InOOBE) {
-    Write-Host "OOBE detected: Applying privacy suppressions, disabling Windows Hello, and turning off consumer features." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host " OOBE detected: applying privacy & Hello suppressions and disabling consumer features ..." -ForegroundColor Yellow
     Set-OOBEPrivacySkip
-    Disable-WindowsHelloPrompts
+    Disable-WindowsHelloPrompts  # [1](https://www.elevenforum.com/t/enable-or-disable-choose-privacy-settings-experience-at-sign-in-in-windows-11.12027/)[2](https://www.thewindowsclub.com/turn-off-advertising-id-windows-10)
     Ensure-OOBENetworkReady
-
-    # Generate a compliant computer name BEFORE enrollment (no forced reboot)
     $Desired = Get-GeneratedComputerName
     Set-ComputerNameIfNeeded -DesiredName $Desired | Out-Null
 }
 
 # ---------- User Info Banner ----------
 $line = ('=' * 78)
+Write-Host ""
 Write-Host $line -ForegroundColor Cyan
 Write-Host " WORKSPACE ONE – WINDOWS ENROLLMENT" -ForegroundColor Cyan
 Write-Host $line -ForegroundColor Cyan
-Write-Host "READ BEFORE CONTINUING:" -ForegroundColor Yellow
-Write-Host "  • Username format: YOUR_OHR@genpact.com" -ForegroundColor White
-Write-Host "  • Password is NOT masked (visible). CAREFULLY verify before pressing Enter." -ForegroundColor White
-Write-Host "  • You will be asked to CONFIRM the password." -ForegroundColor White
-Write-Host "  • Download may take up to ~10 minutes depending on your network speed." -ForegroundColor White
+Write-Host " READ BEFORE CONTINUING:" -ForegroundColor Yellow
+Write-Host "   • Username format: YOUR_OHR@genpact.com" -ForegroundColor White
+Write-Host "   • Password is NOT masked (visible). CAREFULLY verify before pressing Enter." -ForegroundColor White
+Write-Host "   • You'll be shown your OHR+password and can re-enter if needed." -ForegroundColor White
+Write-Host "   • Download may take up to ~10 minutes depending on your network speed." -ForegroundColor White
 Write-Host $line -ForegroundColor Cyan
 
-# Prompt for username (accept OHR-only or full UPN) & an UNMASKED password with confirmation
-$WsUserRaw = Read-Host "Enter Workspace ONE username (Type ONLY your OHR digits or full YOUR_OHR@genpact.com)"
+# -------- Username & Password (single entry + confirm/preview flow) --------
+Write-Host ""
+$WsUserRaw = Read-Host "  Enter Workspace ONE username (Type ONLY your OHR digits or full YOUR_OHR@genpact.com)"
 if ($WsUserRaw -notmatch '@') { $WsUser = "$WsUserRaw@genpact.com" } else { $WsUser = $WsUserRaw }
 
-# Password verify loop (visible by design)
 while ($true) {
-    $WsPass1 = Read-Host "Enter Workspace ONE password (VISIBLE as you type)"
-    $WsPass2 = Read-Host "Re-enter the password to CONFIRM (VISIBLE as you type)"
-    if ($WsPass1 -ceq $WsPass2) { $WsPass = $WsPass1; break }
-    Write-Host "Passwords do not match. Let's try again. Be careful—password is visible." -ForegroundColor Red
+    Write-Host ""
+    $WsPass = Read-Host "  Enter Workspace ONE password (VISIBLE as you type)"
+    Write-Host ""
+    Write-Host "  You entered:" -ForegroundColor Yellow
+    Write-Host "   • Username : $WsUser" -ForegroundColor White
+    Write-Host "   • Password : $WsPass" -ForegroundColor White
+    $choice = Read-Host "  Proceed with these values?  [P]roceed  /  [R]e-enter  /  [N] Abort"
+    if ($choice -match '^[Pp]$') { break }
+    if ($choice -match '^[Nn]$') { Write-Host " Aborted by user." -ForegroundColor Yellow; exit }
+    # else loop to re-enter
 }
 
 Write-Host ""
-Write-Host "Server: $ServerFqdn" -ForegroundColor DarkGray
-Write-Host "Group : $GroupId" -ForegroundColor DarkGray
-Write-Host "User  : $WsUser" -ForegroundColor DarkGray
+Write-Host " Server : $ServerFqdn" -ForegroundColor DarkGray
+Write-Host " Group  : $GroupId" -ForegroundColor DarkGray
+Write-Host " User   : $WsUser" -ForegroundColor DarkGray
 Write-Host ""
 
-# Optional one-time confirmation (user-facing safety for visible password)
-$confirm = Read-Host "Proceed with installation and enrollment now? (Y/N)"
-if ($confirm -notin @('Y','y')) { Write-Host "Aborted by user." -ForegroundColor Yellow; exit }
+$confirm = Read-Host "  Proceed with installation and enrollment now? (Y/N)"
+if ($confirm -notin @('Y','y')) { Write-Host " Aborted by user." -ForegroundColor Yellow; exit }
 
 # Prepare working folder
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -200,11 +202,7 @@ $LogPath = Join-Path $WorkRoot "HubInstall.log"
 
 # --------- Robust download: BITS -> curl.exe -> Invoke-WebRequest ----------
 function Download-WithBITS {
-    param(
-        [Parameter(Mandatory=$true)][string]$Url,
-        [Parameter(Mandatory=$true)][string]$Destination,
-        [int]$TimeoutSec = 900 # 15 minutes safety
-    )
+    param([string]$Url,[string]$Destination,[int]$TimeoutSec = 900)
     Try {
         $job = Start-BitsTransfer -Source $Url -Destination $Destination -Asynchronous -DisplayName "WS1HubDownload" -Priority Foreground
         $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -213,8 +211,8 @@ function Download-WithBITS {
             $j = Get-BitsTransfer -AllUsers | Where-Object { $_.Id -eq $job.Id }
             if (-not $j) { break }
             if ($j.BytesTotal -gt 0) {
-                $pct = [int](($j.BytesTransferred / $j.BytesTotal) * 100)
-                Write-Progress -Activity "Downloading Hub (BITS)" -Status "$pct% complete" -PercentComplete $pct
+                $pct = ($j.BytesTransferred / $j.BytesTotal * 100)
+                Write-Progress -Activity "Downloading Hub (BITS)" -Status ("{0:N1}% complete" -f $pct) -PercentComplete $pct
             } else {
                 Write-Progress -Activity "Downloading Hub (BITS)" -Status "Starting..." -PercentComplete 0
             }
@@ -228,55 +226,45 @@ function Download-WithBITS {
             }
         }
         return (Test-Path $Destination)
-    } Catch {
-        return $false
-    }
+    } Catch { return $false }
 }
 
 function Download-WithCurl {
-    param(
-        [Parameter(Mandatory=$true)][string]$Url,
-        [Parameter(Mandatory=$true)][string]$Destination
-    )
+    param([string]$Url,[string]$Destination)
     try {
         $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
         if (-not $curl) { return $false }
-        Write-Host "Downloading with curl.exe..." -ForegroundColor Yellow
-        # -L follow redirects, -f fail on HTTP errors, --retry for transient cases
+        Write-Host ""
+        Write-Host " Downloading with curl.exe ..." -ForegroundColor Yellow
         $args = @("-L", "-f", "--retry", "5", "--retry-delay", "2", "-o", $Destination, $Url)
         $p = Start-Process -FilePath $curl.Source -ArgumentList $args -Wait -PassThru -WindowStyle Hidden
         return ($p.ExitCode -eq 0 -and (Test-Path $Destination))
-    } catch {
-        return $false
-    }
+    } catch { return $false }
 }
 
 function Download-WithIWR {
-    param(
-        [Parameter(Mandatory=$true)][string]$Url,
-        [Parameter(Mandatory=$true)][string]$Destination
-    )
+    param([string]$Url,[string]$Destination)
     try {
-        Write-Host "Downloading with Invoke-WebRequest (fallback)..." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host " Downloading with Invoke-WebRequest (fallback) ..." -ForegroundColor Yellow
         Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing -TimeoutSec 900
         return (Test-Path $Destination)
-    } catch {
-        return $false
-    }
+    } catch { return $false }
 }
 
-Write-Host "Starting Hub download... (may take up to ~10 minutes)" -ForegroundColor Green
+Write-Host ""
+Write-Host " Starting Hub download... (may take up to ~10 minutes)" -ForegroundColor Green
 $start = Get-Date
 $ok = Download-WithBITS -Url $HubMsiUrl -Destination $MsiPath
 if (-not $ok) { $ok = Download-WithCurl -Url $HubMsiUrl -Destination $MsiPath }
 if (-not $ok) { $ok = Download-WithIWR  -Url $HubMsiUrl -Destination $MsiPath }
 
 if (-not $ok) {
-    Write-Host "Download failed via all methods. Please check connectivity or proxy settings." -ForegroundColor Red
+    Write-Host " Download failed via all methods. Please check connectivity or proxy settings." -ForegroundColor Red
     exit 1
 }
 $elapsed = (Get-Date) - $start
-Write-Host ("Download completed in {0:mm\:ss}." -f $elapsed) -ForegroundColor Green
+Write-Host (" Download completed in {0:mm\:ss}." -f $elapsed) -ForegroundColor Green
 
 # --------- Install Hub & enroll silently (order of MSI properties matters) ----------
 $msiArgs = @(
@@ -289,18 +277,20 @@ $msiArgs = @(
     "LGName=`"$GroupId`"",
     "USERNAME=`"$WsUser`"",
     "PASSWORD=`"$WsPass`"",
-    "ASSIGNTOLOGGEDINUSER=N"
+    "ASSIGNTOLOGGEDINUSER=N"   # << changed per request
 )
 
-Write-Host "Installing Hub & enrolling device (silent)..." -ForegroundColor Green
+Write-Host ""
+Write-Host " Installing Hub & enrolling device (silent)..." -ForegroundColor Green
 $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru -WindowStyle Hidden
 if ($proc.ExitCode -ne 0) {
-    Write-Host "Hub installation failed. ExitCode=$($proc.ExitCode). See: $LogPath" -ForegroundColor Red
+    Write-Host " Hub installation failed. ExitCode=$($proc.ExitCode). See: $LogPath" -ForegroundColor Red
     exit $proc.ExitCode
 }
 
 # --------- Pin Windows to 24H2 (Windows Update for Business policy) ----------
-Write-Host "Pinning Windows to 24H2 (feature updates)..." -ForegroundColor Green
+Write-Host ""
+Write-Host " Pinning Windows to 24H2 (feature updates)..." -ForegroundColor Green
 $WUKey = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
 New-Item -Path $WUKey -Force | Out-Null
 New-ItemProperty -Path $WUKey -Name "ProductVersion" -PropertyType String -Value "Windows 11" -Force | Out-Null
@@ -315,4 +305,5 @@ $LaunchCmd = 'powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -S
              'try { Start-Process ''vmwinhub:'' } catch {}"'
 New-ItemProperty -Path $RunOnceKey -Name "LaunchWorkspaceONEHub" -PropertyType String -Value $LaunchCmd -Force | Out-Null
 
-Write-Host "Setup complete. If you changed the hostname, it will take effect after the next reboot (no reboot performed now)." -ForegroundColor Cyan
+Write-Host ""
+Write-Host " Setup complete. If the hostname was changed, it will take effect after the next reboot (no restart performed now)." -ForegroundColor Cyan
