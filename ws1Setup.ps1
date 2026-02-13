@@ -1,26 +1,26 @@
 <#
-.SYNOPSIS
-  Installs Workspace ONE Intelligent Hub for Windows, silently enrolls to your DS/OG,
-  pins Windows to 24H2, opens Hub UI, and hardens OOBE for zero‑prompt privacy/Hello.
-
-.USER MESSAGE (VISIBLE, IMPORTANT)
-  • Login = OHR only (digits). Do NOT add any domain.
-  • Password is VISIBLE. You’ll see OHR+password and can adjust them before proceeding.
-  • Download may take up to ~10 minutes depending on your connection.
+This is a helper for XPO users - JK 790007415 03.02.2026
+Functions:
+-pin windows to 24h2
+-skip oobe windows hello 
+-skip oobe location questions 
+-install ws1
+-enroll ws1 based on user input
+-restart, and run ws1 upon first login 
 #>
 
-#--------------------------- Fixed values (per your environment) ---------------------------#
+#--------------------------- Hardcoded values  --------------------------------------------#
 $ServerUrlInput = "https://ds1106.awmdm.com"
 $GroupId        = "DataTechAILandingO"
 #------------------------------------------------------------------------------------------#
 
-# Normalize SERVER argument: Hub expects the DS FQDN (strip protocol if present)
+# Check if user did with https, fix to fqdn
 $ServerFqdn = ($ServerUrlInput -replace '^https?://','').TrimEnd('/')
 
-# Preferred Hub MSI source (swap to your DS /agents path if desired)
+# url for ws1 hub download from official websitre
 $HubMsiUrl = "https://packages.omnissa.com/wsone/AirwatchAgent.msi"
 
-# Ensure elevation
+# Check for admin 
 $currUser = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($currUser)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -33,16 +33,13 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 
 # =======================================================================
-# OOBE Helper: privacy suppression, WHfB off (with RunOnce re-apply),
-# consumer features off, reliable OOBE detection, Wi‑Fi auto-open + check.
+#  This part if for detecting if we're in OOBE and if so, make sure wifi prompted and annoying choices like location share, diagnostic data sharing are disabled and not shown to user
+# ISSUE: detection does not work, changed to always asssume oobe <-- musze to sprawdzic pozniej
 # =======================================================================
 
 function Test-IsOOBE {
     <#
-      Reliable OOBE detection using multiple signals:
-        - HKLM:\SYSTEM\Setup\OOBEInProgress / SystemSetupInProgress
-        - HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State\StateName
-          (values like *_RESEAL_TO_OOBE / UNDEPLOYABLE during setup)
+      this does not work, changed to always assume oobe
     #>
     $oobeFlag = $false
     try {
@@ -82,7 +79,7 @@ function Set-OOBEPrivacySkip {
 }
 
 function Disable-WindowsHelloPrompts {
-    # Suppress WHfB during/after OOBE (documented PassportForWork knobs)
+    # Suppress Windows Hello prompts, this will be set up after correct tag in AW is applied and user consent will be done.
     Set-RegistryDword "HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork" "Enabled" 0
     Set-RegistryDword "HKLM:\SOFTWARE\Policies\Microsoft\PassportForWork" "DisablePostLogonProvisioning" 1
     # Re-apply once after first logon to prevent any race with post-logon provisioning
@@ -101,9 +98,9 @@ function Ensure-OOBENetworkReady {
     Write-Host " NETWORK SETUP (OOBE) " -ForegroundColor Yellow
     Write-Host " • We will open the Wi‑Fi selection for you. Connect to your network there." -ForegroundColor White
 
-    # Open the “Show available networks” flyout directly (works from console/PowerShell)
+    # Open the “Show available networks” 
     try { Start-Process "ms-availablenetworks:" -ErrorAction SilentlyContinue } catch {}
-    # The URI above is known to launch the Wi‑Fi networks panel. 
+   # Test for network <--- need to make it ask for yes, enter key is confusing test user
 
     Write-Host " • After connecting, return here and press ENTER. We'll verify internet connectivity..." -ForegroundColor White
     while ($true) {
@@ -121,7 +118,7 @@ function Ensure-OOBENetworkReady {
 function Get-GeneratedComputerName {
     param(
         [Parameter(Mandatory=$false)][string]$OhrForSuffix,
-        [Parameter(Mandatory=$false)][string]$Prefix = "GNPT"  # keep short to remain <= 15 chars with suffix
+        [Parameter(Mandatory=$false)][string]$Prefix = "GNPT"  # temporary hostname prefix
     )
     $ohr = ($OhrForSuffix -replace '[^\d]','')
     $serial = (Get-CimInstance -ClassName Win32_BIOS -ErrorAction SilentlyContinue).SerialNumber
@@ -149,9 +146,8 @@ if ($InOOBE) {
     Write-Host ""
     Write-Host " OOBE detected..." -ForegroundColor Yellow
     Set-OOBEPrivacySkip
-    Disable-WindowsHelloPrompts   # Suppresses WHfB prompts reliably. [3](https://www.elevenforum.com/t/enable-or-disable-choose-privacy-settings-experience-at-sign-in-in-windows-11.12027/)[4](https://www.thewindowsclub.com/turn-off-advertising-id-windows-10)
+    Disable-WindowsHelloPrompts   
     Ensure-OOBENetworkReady
-    # Name can include OHR suffix if already typed later; for first pass, use serial/random
     $Desired = Get-GeneratedComputerName
     Set-ComputerNameIfNeeded -DesiredName $Desired | Out-Null
 }
@@ -160,7 +156,7 @@ if ($InOOBE) {
 $line = ('=' * 78)
 Write-Host ""
 Write-Host $line -ForegroundColor Cyan
-Write-Host " WORKSPACE ONE – WINDOWS ENROLLMENT" -ForegroundColor Cyan
+Write-Host " WORKSPACE ONE – WINDOWS ENROLLMENT -- JK Script v2.1" -ForegroundColor Cyan
 Write-Host $line -ForegroundColor Cyan
 Write-Host " READ BEFORE CONTINUING:" -ForegroundColor Yellow
 Write-Host "   • Login = OHR only (digits). Do NOT add any domain." -ForegroundColor White
@@ -173,11 +169,11 @@ Write-Host ""
 $ohr = Read-Host "  Enter your OHR (digits only)"
 while ($ohr -notmatch '^\d+$') {
     Write-Host "  OHR must be digits only. Please try again." -ForegroundColor Red
-    $ohr = Read-Host "  Enter your OHR (digits only)"
+    $ohr = Read-Host "  Enter your OHR (digits only): "
 }
 
 Write-Host ""
-$WsPass = Read-Host "  Enter Workspace ONE password (VISIBLE as you type)"
+$WsPass = Read-Host "  Enter Workspace ONE password: "
 
 while ($true) {
     Write-Host ""
@@ -220,7 +216,7 @@ $null = New-Item -Path $WorkRoot -ItemType Directory -Force -ErrorAction Silentl
 $MsiPath = Join-Path $WorkRoot "AirwatchAgent.msi"
 $LogPath = Join-Path $WorkRoot "HubInstall.log"
 
-# --------- Robust download: BITS -> curl.exe -> Invoke-WebRequest ----------
+# --------- mutiple issues with downloading via Invoke web request, AI wrote the following function > Download: BITS -> curl.exe -> Invoke-WebRequest ----------
 function Download-WithBITS {
     param([string]$Url,[string]$Destination,[int]$TimeoutSec = 900)
     Try {
@@ -271,7 +267,7 @@ function Download-WithIWR {
         return (Test-Path $Destination)
     } catch { return $false }
 }
-
+# AI end. download works. 
 Write-Host ""
 Write-Host " Starting Hub download... (may take up to ~10 minutes)" -ForegroundColor Green
 $start = Get-Date
@@ -286,7 +282,7 @@ if (-not $ok) {
 $elapsed = (Get-Date) - $start
 Write-Host (" Download completed in {0:mm\:ss}." -f $elapsed) -ForegroundColor Green
 
-# --------- Install Hub & enroll silently (order of MSI properties matters) ----------
+# --------- Install Hub & enroll silently  ----------
 $msiArgs = @(
     "/i", "`"$MsiPath`"",
     "/qn", "/norestart",
@@ -295,9 +291,9 @@ $msiArgs = @(
     "DOWNLOADWSBUNDLE=true",
     "SERVER=`"$ServerFqdn`"",
     "LGName=`"$GroupId`"",
-    "USERNAME=`"$ohr`"",           # OHR only, no domain
+    "USERNAME=`"$ohr`"",           
     "PASSWORD=`"$WsPass`"",
-    "ASSIGNTOLOGGEDINUSER=N"       # per your request
+    "ASSIGNTOLOGGEDINUSER=N"       #not sure what it does, if true it also asks for additional signing after enrollment
 )
 
 Write-Host ""
@@ -308,7 +304,7 @@ if ($proc.ExitCode -ne 0) {
     exit $proc.ExitCode
 }
 
-# --------- Pin Windows to 24H2 (Windows Update for Business policy) ----------
+# --------- Pin Windows to 24H2  ----------
 Write-Host ""
 Write-Host " Pinning Windows to 24H2 (feature updates)..." -ForegroundColor Green
 $WUKey = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"
@@ -323,10 +319,10 @@ try { gpupdate /target:computer /force | Out-Null } catch {}
 $RunOnceKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"
 $LaunchCmd = 'powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Seconds 10; ' +
              'try { Start-Process ''ws1winhub:'' } catch {}; ' +
-             'try { Start-Process ''vmwinhub:'' } catch {}"'
+             'try { Start-Process ''vmwinhub:'' } catch {}"' #this line must be removed
 New-ItemProperty -Path $RunOnceKey -Name "LaunchWorkspaceONEHub" -PropertyType String -Value $LaunchCmd -Force | Out-Null
 
 Write-Host ""
-Write-Host " Setup complete. " -ForegroundColor Cyan
+Write-Host " Setup complete. Restarting computer. " -ForegroundColor Cyan
 Start-Sleep -Seconds 10
 Restart-Computer -Force
